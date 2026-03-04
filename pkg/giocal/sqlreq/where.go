@@ -145,17 +145,11 @@ func isExper(node *pg_query.Node) bool {
 }
 
 func isBoolExpr(node *pg_query.Node) bool {
-	if node.GetBoolExpr() != nil {
-		return true
-	}
-	return false
+	return node.GetBoolExpr() != nil
 }
 
 func isAexpr(node *pg_query.Node) bool {
-	if node.GetAExpr() != nil {
-		return true
-	}
-	return false
+	return node.GetAExpr() != nil
 }
 
 // tree
