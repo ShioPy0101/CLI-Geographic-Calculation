@@ -38,6 +38,17 @@ curl -sS \
 
 `路線名` のみを指定した場合は全線、`路線名 BETWEEN 始点駅 AND 終点駅` を指定した場合はその駅間だけを描画対象にします。
 
+実路線形状 GeoJSON を使って描画する
+
+```
+curl -sS \
+  --get \
+  --data-urlencode "query=SELECT 山陽線 BETWEEN 姫路 AND 神戸, 東海道線 BETWEEN 神戸 AND 大阪 OPTION geographic, single_line;" \
+  https://cli-geographic-calculation.vercel.app/api/2023/rail/svg -o route-geographic.svg
+```
+
+`OPTION geographic` は `pkg/giodata/N05-24_RailroadSection2.geojson` の LineString を路線形状として使います。`OPTION single_line` と併用すると、連続した複数区間を 1 本の SVG path として出力します。
+
 ![sample image](./doc/sample-chuo.png)
 出力 svg の例（テスト版）
 

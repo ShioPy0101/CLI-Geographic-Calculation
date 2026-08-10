@@ -8,6 +8,7 @@ import (
 	"CLI-Geographic-Calculation/pkg/giocal/giocaltype"
 	"CLI-Geographic-Calculation/pkg/giocal/graphstructure"
 	"CLI-Geographic-Calculation/pkg/giocal/linefilter"
+	"CLI-Geographic-Calculation/pkg/giocal/routepath"
 )
 
 func TestParseRouteSelectionQuery(t *testing.T) {
@@ -23,6 +24,31 @@ func TestParseRouteSelectionQuery(t *testing.T) {
 	}
 	if selections[1].Line != "総武線" || selections[1].FromStation != nil || selections[1].ToStation != nil {
 		t.Fatalf("unexpected second selection: %+v", selections[1])
+	}
+}
+
+func TestParseRouteQuerySingleLineOption(t *testing.T) {
+	query, err := ParseRouteQuery(`SELECT Alpha BETWEEN A AND B, Beta OPTION geographic, single_line, no_animation, no_labels, endpoint_labels;`)
+	if err != nil {
+		t.Fatalf("ParseRouteQuery returned error: %v", err)
+	}
+	if !query.Options.SingleLine {
+		t.Fatal("SingleLine = false, want true")
+	}
+	if len(query.Selections) != 2 {
+		t.Fatalf("selection count = %d, want 2", len(query.Selections))
+	}
+	if !query.Options.Geographic {
+		t.Fatal("Geographic = false, want true")
+	}
+	if !query.Options.NoAnimation {
+		t.Fatal("NoAnimation = false, want true")
+	}
+	if !query.Options.NoLabels {
+		t.Fatal("NoLabels = false, want true")
+	}
+	if !query.Options.EndpointLabels {
+		t.Fatal("EndpointLabels = false, want true")
 	}
 }
 
@@ -42,6 +68,63 @@ func TestRouteSelectionsToGraphBetween(t *testing.T) {
 	}
 	assertStationNames(t, graph, []string{"B", "C", "D"})
 	assertRailEdgeCount(t, graph, "Alpha", 2)
+}
+
+func TestSQLLikeToResolvedRouteSingleLineOption(t *testing.T) {
+	resolved, options, err := SQLLikeToResolvedRoute("SELECT Alpha BETWEEN A AND B, Alpha BETWEEN B AND D OPTION single_line;", testDatasetResource(t))
+	if err != nil {
+		t.Fatalf("SQLLikeToResolvedRoute returned error: %v", err)
+	}
+	if !options.SingleLine {
+		t.Fatal("SingleLine = false, want true")
+	}
+	path, err := routepath.FlattenContinuousRoute(resolved, routepath.FlattenOptions{AllowReverse: true})
+	if err != nil {
+		t.Fatalf("FlattenContinuousRoute returned error: %v", err)
+	}
+	got := []string{}
+	for _, station := range path.Stations {
+		got = append(got, station.Name)
+	}
+	want := []string{"A", "B", "C", "D"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stations = %v, want %v", got, want)
+	}
+}
+
+func TestRouteSelectionSplitsThroughAdjacentLine(t *testing.T) {
+	resolved, _, err := SQLLikeToResolvedRoute("SELECT Alpha BETWEEN B AND E OPTION single_line;", testDatasetResource(t))
+	if err != nil {
+		t.Fatalf("SQLLikeToResolvedRoute returned error: %v", err)
+	}
+	if len(resolved.Segments) != 2 {
+		t.Fatalf("segment count = %d, want 2", len(resolved.Segments))
+	}
+	if resolved.Segments[0].LineID != "Alpha" || resolved.Segments[1].LineID != "Delta" {
+		t.Fatalf("segment lines = %q, %q; want Alpha, Delta", resolved.Segments[0].LineID, resolved.Segments[1].LineID)
+	}
+	path, err := routepath.FlattenContinuousRoute(resolved, routepath.FlattenOptions{AllowReverse: true})
+	if err != nil {
+		t.Fatalf("FlattenContinuousRoute returned error: %v", err)
+	}
+	got := []string{}
+	for _, station := range path.Stations {
+		got = append(got, station.Name)
+	}
+	want := []string{"B", "C", "D", "E"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("stations = %v, want %v", got, want)
+	}
+}
+
+func TestRouteSelectionsToGraphSplitsThroughAdjacentLine(t *testing.T) {
+	graph, err := SQLLikeToGraph("SELECT Alpha BETWEEN B AND E;", testDatasetResource(t))
+	if err != nil {
+		t.Fatalf("SQLLikeToGraph returned error: %v", err)
+	}
+	assertStationNames(t, graph, []string{"B", "C", "D", "E"})
+	assertRailEdgeCount(t, graph, "Alpha", 2)
+	assertRailEdgeCount(t, graph, "Delta", 1)
 }
 
 func TestRouteSelectionsToGraphMultipleAllBetween(t *testing.T) {
@@ -182,7 +265,9 @@ func testDatasetResource(t *testing.T) *giocaltype.DatasetResource {
 			{"type":"Feature","properties":{"N02_003":"Alpha","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[0,0],[1,0],[2,0],[3,0]]}},
 			{"type":"Feature","properties":{"N02_003":"Beta","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[10,0],[11,0],[12,0]]}},
 			{"type":"Feature","properties":{"N02_003":"Other","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[20,0],[21,0]]}},
-			{"type":"Feature","properties":{"N02_003":"Gamma","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[30,0],[31,0],[32,0]]}}
+			{"type":"Feature","properties":{"N02_003":"Gamma","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[30,0],[31,0],[32,0]]}},
+			{"type":"Feature","properties":{"N02_003":"Aardvark","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[100,0],[101,0]]}},
+			{"type":"Feature","properties":{"N02_003":"Delta","N02_004":"JR Test"},"geometry":{"type":"LineString","coordinates":[[3,0],[4,0],[5,0]]}}
 		]
 	}`
 	stationJSON := `{
@@ -197,7 +282,11 @@ func testDatasetResource(t *testing.T) *giocaltype.DatasetResource {
 			{"type":"Feature","properties":{"N02_003":"Beta","N02_004":"JR Test","N02_005":"Z","N02_005c":"Z"},"geometry":{"type":"LineString","coordinates":[[12,0]]}},
 			{"type":"Feature","properties":{"N02_003":"Other","N02_004":"JR Test","N02_005":"Outside","N02_005c":"Outside"},"geometry":{"type":"LineString","coordinates":[[20,0]]}},
 			{"type":"Feature","properties":{"N02_003":"Gamma","N02_004":"JR Test","N02_005":"A terminal","N02_005c":"A-terminal"},"geometry":{"type":"LineString","coordinates":[[30,0]]}},
-			{"type":"Feature","properties":{"N02_003":"Gamma","N02_004":"JR Test","N02_005":"C-hub","N02_005c":"C-hub"},"geometry":{"type":"LineString","coordinates":[[32,0]]}}
+			{"type":"Feature","properties":{"N02_003":"Gamma","N02_004":"JR Test","N02_005":"C-hub","N02_005c":"C-hub"},"geometry":{"type":"LineString","coordinates":[[32,0]]}},
+			{"type":"Feature","properties":{"N02_003":"Aardvark","N02_004":"JR Test","N02_005":"D","N02_005c":"D-far"},"geometry":{"type":"LineString","coordinates":[[100,0]]}},
+			{"type":"Feature","properties":{"N02_003":"Aardvark","N02_004":"JR Test","N02_005":"E","N02_005c":"E-far"},"geometry":{"type":"LineString","coordinates":[[101,0]]}},
+			{"type":"Feature","properties":{"N02_003":"Delta","N02_004":"JR Test","N02_005":"D","N02_005c":"D"},"geometry":{"type":"LineString","coordinates":[[3,0]]}},
+			{"type":"Feature","properties":{"N02_003":"Delta","N02_004":"JR Test","N02_005":"E","N02_005c":"E"},"geometry":{"type":"LineString","coordinates":[[4,0]]}}
 		]
 	}`
 	var rail giocaltype.GiotypeRailroadSectionFeatureCollection
