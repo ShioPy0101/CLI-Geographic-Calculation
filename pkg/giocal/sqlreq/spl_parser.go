@@ -11,11 +11,15 @@ import (
 )
 
 func ParseSQLQuery(query string) *pg_query.ParseResult {
-	parsed, err := pg_query.Parse(query)
+	parsed, err := ParseSQLQueryE(query)
 	if err != nil {
 		panic(err)
 	}
 	return parsed
+}
+
+func ParseSQLQueryE(query string) (*pg_query.ParseResult, error) {
+	return pg_query.Parse(query)
 }
 
 /**

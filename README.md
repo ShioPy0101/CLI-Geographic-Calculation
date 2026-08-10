@@ -27,6 +27,17 @@ curl -sS \
 curl -sS   --get   --data-urlencode "query=SELECT * FROM rail WHERE company IN ('東日本旅客鉄道' , '東海旅客鉄道' ) AND line = '中央線'"   https://cli-geographic-calculation.vercel.app/api/2023/rail/svg -o chuo.svg
 ```
 
+路線選択 DSL で駅間だけを指定する
+
+```
+curl -sS \
+  --get \
+  --data-urlencode "query=SELECT 山手線 BETWEEN \"新宿\" AND \"東京\", 総武線;" \
+  https://cli-geographic-calculation.vercel.app/api/2023/rail/svg -o route-section.svg
+```
+
+`路線名` のみを指定した場合は全線、`路線名 BETWEEN 始点駅 AND 終点駅` を指定した場合はその駅間だけを描画対象にします。
+
 ![sample image](./doc/sample-chuo.png)
 出力 svg の例（テスト版）
 

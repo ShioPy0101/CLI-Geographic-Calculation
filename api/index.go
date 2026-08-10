@@ -4,6 +4,7 @@ import (
 	"CLI-Geographic-Calculation/pkg/dataResolve"
 	"CLI-Geographic-Calculation/pkg/giocal"
 	"CLI-Geographic-Calculation/pkg/giocal/giocaltype"
+	"CLI-Geographic-Calculation/pkg/giocal/graphstructure"
 	"CLI-Geographic-Calculation/pkg/giocal/linefilter"
 	"CLI-Geographic-Calculation/pkg/giocal/sqlreq"
 	"CLI-Geographic-Calculation/pkg/render/graphsvg"
@@ -107,9 +108,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to resolve dataset resources: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	parsed := sqlreq.ParseSQLQuery(query)
-
-	ds.Handler(w, year, resolved, parsed, query, format)
+	ds.Handler(w, year, resolved, nil, query, format)
 }
 
 func resolveResources(r giocaltype.DatasetResourcePath) (giocaltype.DatasetResourcePath, error) {
@@ -156,12 +155,29 @@ func handleRail(
 		return
 	}
 
-	// 2) SQL -> Graph
-	graph := sqlreq.SQLToGraph(
-		linefilter.FilterRailroadSectionByProperties,
-		parsed,
-		drs,
-	)
+	// 2) SQLLike/SQL -> Graph
+	selections, routeParseErr := sqlreq.ParseRouteSelectionQuery(rawSQL)
+	var graph *graphstructure.Graph
+	if routeParseErr == nil {
+		graph, err = sqlreq.RouteSelectionsToGraph(selections, drs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	} else {
+		if parsed == nil {
+			parsed, err = sqlreq.ParseSQLQueryE(rawSQL)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		graph = sqlreq.SQLToGraph(
+			linefilter.FilterRailroadSectionByProperties,
+			parsed,
+			drs,
+		)
+	}
 	switch format {
 	case "svg":
 		svg, err := graphsvg.RenderRailGraphSVG(graph, graphsvg.Options{
