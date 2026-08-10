@@ -4,7 +4,10 @@ import (
 	"CLI-Geographic-Calculation/pkg/dataResolve"
 	"CLI-Geographic-Calculation/pkg/giocal"
 	"CLI-Geographic-Calculation/pkg/giocal/giocaltype"
+	"CLI-Geographic-Calculation/pkg/giocal/graphstructure"
 	"CLI-Geographic-Calculation/pkg/giocal/linefilter"
+	"CLI-Geographic-Calculation/pkg/giocal/railshape"
+	"CLI-Geographic-Calculation/pkg/giocal/routepath"
 	"CLI-Geographic-Calculation/pkg/giocal/sqlreq"
 	"CLI-Geographic-Calculation/pkg/render/graphsvg"
 	"encoding/json"
@@ -47,6 +50,8 @@ var datasets = map[routeKey]Dataset{
 		},
 	},
 }
+
+const railroadShapePath = "pkg/giodata/N05-24_RailroadSection2.geojson"
 
 func parseYearResourceFormat(path string) (year int, resource string, format string, err error) {
 	p := strings.Trim(path, "/")
@@ -107,9 +112,16 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to resolve dataset resources: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	parsed := sqlreq.ParseSQLQuery(query)
+	ds.Handler(w, year, resolved, nil, query, format, boolQuery(r, "single_line") || boolQuery(r, "single-line"))
+}
 
-	ds.Handler(w, year, resolved, parsed, query, format)
+func boolQuery(r *http.Request, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolveResources(r giocaltype.DatasetResourcePath) (giocaltype.DatasetResourcePath, error) {
@@ -139,7 +151,7 @@ func resolveResources(r giocaltype.DatasetResourcePath) (giocaltype.DatasetResou
 	}, nil
 }
 
-type datasetHandler func(w http.ResponseWriter, year int, res giocaltype.DatasetResourcePath, parsed *pg_query.ParseResult, rawSQL string, format string)
+type datasetHandler func(w http.ResponseWriter, year int, res giocaltype.DatasetResourcePath, parsed *pg_query.ParseResult, rawSQL string, format string, singleLine bool)
 
 func handleRail(
 	w http.ResponseWriter,
@@ -148,6 +160,7 @@ func handleRail(
 	parsed *pg_query.ParseResult,
 	rawSQL string,
 	format string,
+	singleLine bool,
 ) {
 	// 1) データセット読み込み
 	drs, err := giocal.LoadDatasetResource(res)
@@ -156,26 +169,103 @@ func handleRail(
 		return
 	}
 
-	// 2) SQL -> Graph
-	graph := sqlreq.SQLToGraph(
-		linefilter.FilterRailroadSectionByProperties,
-		parsed,
-		drs,
-	)
+	// 2) SQLLike/SQL -> Graph
+	routeQuery, routeParseErr := sqlreq.ParseRouteQuery(rawSQL)
+	var graph *graphstructure.Graph
+	var renderPaths []routepath.RenderPath
+	var geographicPaths []railshape.PathGeometry
+	var routeStations []*graphstructure.Node
+	if routeParseErr == nil {
+		graph, err = sqlreq.RouteSelectionsToGraph(routeQuery.Selections, drs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resolvedRoute, err := sqlreq.RouteSelectionsToResolvedRoute(routeQuery.Selections, drs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		singleLine = singleLine || routeQuery.Options.SingleLine
+		if routeQuery.Options.Geographic {
+			shapeResolver, err := railshape.Load(railroadShapePath)
+			if err != nil {
+				http.Error(w, "failed to load railroad shape geojson: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			geographicPaths, err = shapeResolver.Resolve(resolvedRoute)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if singleLine {
+				flattened, err := railshape.FlattenContinuous(geographicPaths)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				geographicPaths = []railshape.PathGeometry{flattened}
+			}
+			if routeQuery.Options.EndpointLabels {
+				routeStations = endpointStationsFromResolvedRoute(resolvedRoute)
+			} else {
+				routeStations = stationsFromResolvedRoute(resolvedRoute)
+			}
+		} else if singleLine {
+			path, err := routepath.FlattenContinuousRoute(resolvedRoute, routepath.FlattenOptions{AllowReverse: true})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			renderPaths = []routepath.RenderPath{path}
+		} else {
+			renderPaths = routepath.RenderPathsFromResolvedRoute(resolvedRoute)
+		}
+	} else {
+		if parsed == nil {
+			parsed, err = sqlreq.ParseSQLQueryE(rawSQL)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+		graph = sqlreq.SQLToGraph(
+			linefilter.FilterRailroadSectionByProperties,
+			parsed,
+			drs,
+		)
+	}
 	switch format {
 	case "svg":
-		svg, err := graphsvg.RenderRailGraphSVG(graph, graphsvg.Options{
+		options := graphsvg.Options{
 			Width:        1200,
 			Height:       800,
 			Padding:      20,
 			DrawStations: true,
 			DrawLabels:   true,
-		})
+		}
+		if routeParseErr == nil && routeQuery.Options.NoLabels {
+			options.DrawLabels = false
+		}
+		if routeParseErr == nil && routeQuery.Options.EndpointLabels {
+			options.DrawStations = true
+			options.DrawLabels = true
+		}
+		if routeParseErr == nil && routeQuery.Options.Geographic && !routeQuery.Options.NoAnimation {
+			options.AnimatePath = true
+		}
+		var svg string
+		if len(geographicPaths) > 0 {
+			svg, err = graphsvg.RenderRailGeometriesSVG(geographicPaths, routeStations, options)
+		} else if len(renderPaths) > 0 {
+			svg, err = graphsvg.RenderRailPathsSVG(renderPaths, options)
+		} else {
+			svg, err = graphsvg.RenderRailGraphSVG(graph, options)
+		}
 		if err != nil {
 			http.Error(w, "failed to render svg: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-
 		w.Header().Set("Content-Type", "image/svg+xml; charset=utf-8")
 		_, _ = w.Write([]byte(svg))
 		return
@@ -202,4 +292,41 @@ func handleRail(
 
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func stationsFromResolvedRoute(route routepath.ResolvedRoute) []*graphstructure.Node {
+	out := []*graphstructure.Node{}
+	for _, segment := range route.Segments {
+		out = append(out, segment.Stations...)
+	}
+	return out
+}
+
+func endpointStationsFromResolvedRoute(route routepath.ResolvedRoute) []*graphstructure.Node {
+	out := []*graphstructure.Node{}
+	for _, segment := range route.Segments {
+		if len(segment.Stations) == 0 {
+			continue
+		}
+		out = appendStationEndpoint(out, segment.Stations[0])
+		if len(segment.Stations) > 1 {
+			out = appendStationEndpoint(out, segment.Stations[len(segment.Stations)-1])
+		}
+	}
+	return out
+}
+
+func appendStationEndpoint(stations []*graphstructure.Node, station *graphstructure.Node) []*graphstructure.Node {
+	if station == nil {
+		return stations
+	}
+	for _, existing := range stations {
+		if existing == nil {
+			continue
+		}
+		if existing.ID == station.ID || (existing.Name == station.Name && existing.Lon == station.Lon && existing.Lat == station.Lat) {
+			return stations
+		}
+	}
+	return append(stations, station)
 }
